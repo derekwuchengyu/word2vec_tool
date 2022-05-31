@@ -1,58 +1,107 @@
-class EmbeddingSim():
-    def __init__(self,df,compareDict,param={'n_sample':10}):    
-        self.df = df
-        self.compareDict = compareDict
-        self.n_sample = param['n_sample']
-        self.groupby_col = param['groupby_col']
-        self.ITEM_ID = param['ITEM_ID']
-        self.group_data = {sec:g for sec, g in self.df.groupby(self.groupby_col) if len(g)>0}
+from pandarallel import pandarallel
+class ClassEvaluateWord2vecModel:
+    """
+    使用範例:
+    class w2vEvaluate(ClassEvaluateWord2vecModel):
+        def __init__(self,df):
+            super().__init__()
+            self.df = df
+            self.ITEM_ID = 'job_area'
 
-    def sec_cos(self,s):
-        datas = {}
-        key = s['key1']
-        key1 = key.split("_")[1]
-        i = list(self.compareDict.keys()).index(key1)
-        if key1 not in self.group_data.keys():
-            return datas
-        col_name = self.compareDict[key1]+str(key1)
-        datas[col_name] = []
+        def searchsorted():
+            pass
 
-        samples = self.group_data[key1].sample(n=self.n_sample,replace=True)
-        if np.random.randint(10) < 1:
-            print('process: ',i*100/len(self.compareDict.keys()),'%')
-        for j,key2 in enumerate(self.compareDict.keys()):
-            if key2 not in self.group_data.keys():
-                continue
-            if i<j:
-                datas[col_name].append('')
-                continue
+    eV = w2vEvaluate(dfl.head(1000))
+    eV.feature_evl(jlW2v_model,'job_area',job_location,n_sample=5)
+    """
+    def __init__(self):
+        pandarallel.initialize(progress_bar=False)
+        self.df = None  #物件資料DataFrame
+        self.ITEM_ID = '' #word2vec 元素
 
-            compare_samples = self.group_data[key2].sample(n=self.n_sample,replace=True)
-            sim = 0
-            n = 0
-            for row1,row2 in zip(samples.iterrows(),compare_samples.iterrows()):
-                item1 = row1[1][self.ITEM_ID] 
-                item2 = row2[1][self.ITEM_ID]
-                if item1!=item2 and item1 in modelb.wv.index2word and item2 in modelb.wv.index2word:
-                    sim += modelb.wv.similarity(item1,item2)
-                    n += 1
-            if n>0:    
-                datas[col_name].append(sim/n)
-            else:
-                datas[col_name].append('*')
+    def searchsorted(self):
+        """
+        數值轉編碼
+        ex:
+            price_range = np.array([0,500,1000,2000,3000,4000,5000,6000,9999999])
+            self.df['價格編碼'] = self.df['PRICE'].apply(lambda x : price_range.searchsorted(x))
+        """
+        pass
+        
+    def feature_evl(self,model,groupby,ranges,n_sample=100):
+        """ 特徵評估 """
+        if len(self.df)==0:
+            print("未帶入df變數!")
+            return 0
 
-        return datas
-    def printSim(self,datas):
-        dist_coss = pd.DataFrame(datas, index =datas.keys(), columns=datas.keys()) 
-        dist_coss = dist_coss.replace(to_replace =["*",""],
+        print("word2vec模型 %s 評估" %(groupby))
+        data = {}
+        self.group = {str(sec):g.sample(n=n_sample,replace=True) for sec, g in self.df.groupby(groupby) if len(g)>0}
+        tags = []
+        
+        if type(ranges)==np.ndarray: # 範圍型特徵:
+            stack  = lambda x : range(1,len(x))
+            index  = lambda x : x
+            column = lambda x : str(ranges[x-1])+'~'+str(ranges[x])
+
+        elif type(ranges)==dict: # 類別型特徵
+            stack  = lambda x : x
+            index  = lambda x : list(ranges.keys()).index(x)
+            column = lambda x : str(ranges[x])+str(x)
+            
+        else:
+            return "類型錯誤!"
+        
+        for i in stack(ranges):
+            for j in stack(ranges):
+                if index(i)>=index(j):
+                    tags.append(str(i)+'_'+str(j))
+                    
+        print("計算數量: ",len(tags))
+        dataFrame = pd.DataFrame({'tag':tags})
+        dataFrame = dataFrame.parallel_apply(self.func,model=model,n_sample=n_sample,axis=1)
+        
+        for i in stack(ranges):
+            col_name = column(i)
+            if col_name not in data.keys():
+                data[col_name] = {}
+                
+            for j in stack(ranges):
+                row_index = column(j)
+                data[col_name][row_index] = ''
+                tag = str(i)+'_'+str(j)
+                value = dataFrame.query('tag==@tag')
+                if len(value)>0:
+                    data[col_name][row_index] = value['score'].values[0]
+                        
+
+        price_cos = pd.DataFrame(data, index =data.keys()) 
+        price_cos = price_cos.replace(to_replace =["*",""],
                                       value =0)
-#         dist_coss.T.style.background_gradient(cmap='Blues').to_excel('591_dist_0804.xlsx', engine='openpyxl') #輸出Excel
-        dist_coss.T.style.background_gradient(cmap='Blues')
-    def EmbeddingSim(self):
-        dfg = pd.DataFrame({'key1':[str(name)+'_'+str(key1) for key1,name in self.compareDict.items()]})
-        dfg['result'] = dfg.parallel_apply(self.sec_cos,axis=1)
-        datas = {}
-        for row in dfg['result']:
-            for k,v in row.items():
-                datas[k] = v
-        self.printSim(datas)
+
+        display(price_cos.T.style.background_gradient(cmap='Blues'))
+        
+        return price_cos
+
+    def func(self,s,model,n_sample=100):
+        i = str(s['tag'].split("_")[0])
+        j = str(s['tag'].split("_")[1])
+        try:
+            samples = self.group[i]
+            compare_samples = self.group[j]
+        except:
+            s['score'] = 'KeyError'
+            return s
+        
+        sim = []
+        for row1,row2 in zip(samples.iterrows(),compare_samples.iterrows()):
+            item1 = row1[1][self.ITEM_ID] 
+            item2 = row2[1][self.ITEM_ID]
+            if item1!=item2: # and item1 in modelb.wv.index2word and item2 in modelb.wv.index2word:
+                try:
+                    sim.append(abs(model.wv.similarity(item1,item2)))
+                except:
+                    pass
+
+        s['score'] = np.mean(sim) if len(sim)>0 else ''
+        return s
